@@ -1,0 +1,190 @@
+---
+title: "LNM HW3"
+author: "Luke Schwenke"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# **Part 1**
+
+### Load Data & Packages
+```{r data, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+library(dplyr) 
+library(ggplot2)
+library(glue)
+library(gridExtra)
+library(caret)
+library(mlbench)
+library(randomForest)
+library(MASS)
+
+df <- read.csv('claim_history.csv')
+df %>% head()
+
+```
+
+### Setup
+```{r part_1}
+
+# Create new variables
+df$FREQUENCY = df$CLM_COUNT/df$EXPOSURE
+df$TARGET = as.factor(ifelse(df$FREQUENCY>1,1,0))
+
+# Establish predictors
+cats <- c('MSTATUS', 'CAR_TYPE', 'REVOKED', 'URBANICITY') 
+intervals <- c('CAR_AGE', 'MVR_PTS', 'TIF', 'TRAVTIME')
+
+# Remove NA
+df <- df %>% na.omit()
+
+# Subset to keep only relevant columns
+df <- df %>% dplyr::select(c(cats, intervals, 'TARGET', 'FREQUENCY', 'EXPOSURE'))
+
+```
+
+### Section A
+```{r Section A, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+##### Categorical Variables - Bar Charts
+cat1 <- ggplot(df, aes(MSTATUS)) + geom_bar(aes(fill = TARGET))
+cat2 <- ggplot(df, aes(CAR_TYPE)) + geom_bar(aes(fill = TARGET))
+cat3 <- ggplot(df, aes(REVOKED)) + geom_bar(aes(fill = TARGET))
+cat4 <- ggplot(df, aes(URBANICITY)) + geom_bar(aes(fill = TARGET))
+
+grid.arrange(cat1, cat2, cat3, cat4, nrow = 2)
+
+##### Interval Variables - Box Plots
+int1 <- ggplot(df, aes(x=TARGET, y=CAR_AGE)) + geom_boxplot(aes(fill = TARGET))
+int2 <- ggplot(df, aes(x=TARGET, y=MVR_PTS)) + geom_boxplot(aes(fill = TARGET))
+int3 <- ggplot(df, aes(x=TARGET, y=TIF)) + geom_boxplot(aes(fill = TARGET))
+int4 <- ggplot(df, aes(x=TARGET, y=TRAVTIME)) + geom_boxplot(aes(fill = TARGET))  
+
+grid.arrange(int1, int2, int3, int4, nrow = 2)
+
+##### Alternative: Line Charts for Both
+# for (i in c(cats,intervals)) {
+#   odds <- prop.table(table(df[i]))/(1-prop.table(table(df[i])))
+#   plot(odds, type='l', main=glue('Odd Plots of {i}'))
+# }
+
+```
+
+### Section B
+
+See results of Forward Selection including the the predictors, the log-likelihood value (estimate), the Deviance Chi-squares statistic, the Deviance Degree of Freedom, and the Chi-square significance in the below output.
+```{r Section B, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+full_model <- glm(TARGET ~.-FREQUENCY-EXPOSURE, data = df, family = "binomial")
+step_model <- stepAIC(full_model, direction = "forward", trace = FALSE)
+
+summary(step_model)
+anova(step_model, test='Chisq')
+
+# Chi-Square Significance
+pchisq(summary(step_model)$deviance, df=summary(step_model)$df.residual)
+
+# RFE Implementation [BONUS]
+control = caret::rfeControl(functions=rfFuncs, method="cv", number=10, repeats = 1)
+set.seed(777)
+
+rfe_results = rfe(df[,1:8], df$TARGET, sizes=c(1:8), rfeControl=control, verbose=FALSE)
+print(rfe_results)
+
+```
+**BONUS:** After RFE was performed, the top 5 variables out of 8 were kept:
+
+* URBANICITY
+* MVR_PTS
+* REVOKED
+* CAR_TYPE
+* CAR_AGE
+
+### Section C
+
+The following predictors were kept in the model:
+``` {r step_preds, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+names(step_model$coefficients)
+
+########### RFE [BONUS] ################
+# List the predictors in order of choice
+predictors(rfe_results)
+
+# Accuracy and Kappa plots
+ggplot(data = rfe_results, metric = "Accuracy") + theme_bw()
+ggplot(data = rfe_results, metric = "Kappa") + theme_bw()
+
+```
+
+### Section D
+
+Below are the exponentiated coefficients (Odds Ratios) as percentages:
+``` {r step_preds222, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+params <- data.frame(exp(step_model$coefficients))
+params_p <- (params-1)*100
+params_p
+
+```
+
+# Section 2
+
+```{r plots_final, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+######### Plot of predicted Event probability versus the observed Frequency
+predicted_prob = predict(step_model, df, type="response")
+observed_freq = df$FREQUENCY
+exposure = df$EXPOSURE
+
+plot_event <- data.frame(observed_freq, predicted_prob, exposure)
+
+ggplot(plot_event, aes(x = predicted_prob, y = observed_freq, colour = exposure)) +
+  geom_jitter(width = 0.1, height = 0.1) +
+  #geom_point +
+  #geom_abline(intercept = 0, slope = 1, lty = 2) +
+  xlab("Predicted probability") +
+  ylab("Observed frequency") +
+  ggtitle("Predicted Event Probability vs. Observed Frequency")
+
+
+######### Plot of deviance residuals versus the observed frequency
+dev_residuals <- residuals(step_model, type = "deviance")
+
+plot_dev <- data.frame(observed_freq, dev_residuals, exposure)
+
+ggplot(plot_dev, aes(x = dev_residuals, y = observed_freq, colour = exposure)) +
+  geom_jitter(width = 0.1, height = 0.1) +
+  xlab("Deviance Residuals") +
+  ylab("Observed Frequency") +
+  ggtitle("Observed Frequency vs Deviance Residuals")
+
+```
+
+* The Predicted Event Probability vs. Observed Frequency Plot has a fairly large spread of predicted probabilities with most clustered between 0.15 and 0.5. This is to be expected as most records results in no claims, so the probabilities would be lower than 0.5, a common threshold for labeling 1 or 0.
+
+* The Observed Frequency vs. Deviance Residuals plots shows that the model slightly overestimates the true (observed values) due to higher observed frequencies around 1 and 2 values for residuals. Overall since this distribution is spread out we can say this is expected behavior for a good model since the residuals do not follow a strong pattern.
+
+# **Part 3**
+
+### Accuracy Metric
+
+According to the results and confusion matrix below, **the accuracy of this model is 71%**
+```{r Accuracy Metric, echo=TRUE, warning=FALSE, message=FALSE, include=TRUE}
+
+prediction = predict(step_model, df, type="response")
+event = as.factor(ifelse(prediction >= 0.25, 1, 0))
+
+conf_m = caret::confusionMatrix(data=event, reference=df$TARGET)
+conf_m
+
+```
+
+# **BONUS:** Recursive Feature Elimination (RFE) has been applied to 1B, 1C, and 1D (see above)
+
+
+
+
+
